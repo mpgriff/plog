@@ -105,6 +105,52 @@ class abcLog(ABC):
         dump(self, outfile)
         outfile.close()
 
+    def __add__(self, other):
+        """Concatenate logs with overlapping intervals averaged."""
+        assert self.name == other.name, "Logs must have the same name to be concatenated"
+
+        # Combine depth intervals and values
+        combined_depth_top = np.concatenate((self.depth_top, other.depth_top))
+        combined_depth_bot = np.concatenate((self.depth_bot, other.depth_bot))
+        combined_values = np.concatenate((self.values, other.values))
+
+        # Sort by depth_top
+        sorted_indices = np.argsort(combined_depth_top)
+        combined_depth_top = combined_depth_top[sorted_indices]
+        combined_depth_bot = combined_depth_bot[sorted_indices]
+        combined_values = combined_values[sorted_indices]
+
+        # Merge overlapping intervals
+        merged_depth_top = [combined_depth_top[0]]
+        merged_depth_bot = []
+        merged_values = []
+
+        current_values = [combined_values[0]]
+        for i in range(1, len(combined_depth_top)):
+            if combined_depth_top[i] <= merged_depth_bot[-1] if merged_depth_bot else float('-inf'):
+                # Overlapping interval: average values
+                current_values.append(combined_values[i])
+                merged_depth_bot[-1] = max(merged_depth_bot[-1], combined_depth_bot[i])
+            else:
+                # Non-overlapping interval: finalize the previous interval
+                merged_values.append(np.mean(current_values))
+                current_values = [combined_values[i]]
+                merged_depth_bot.append(combined_depth_bot[i - 1])
+                merged_depth_top.append(combined_depth_top[i])
+
+        # Finalize the last interval
+        merged_values.append(np.mean(current_values))
+        merged_depth_bot.append(combined_depth_bot[-1])
+
+        # Create a new log with merged data
+        return self.__class__(
+            values=np.array(merged_values),
+            depth_top=np.array(merged_depth_top),
+            depth_bot=np.array(merged_depth_bot),
+            log_name=self.name,
+            units=self.units
+        )
+
 
 class Log(abcLog):
     def __init__(self, values, depth_top, depth_bot, log_name, units='', cmap=Blues, **kwargs):
@@ -433,6 +479,18 @@ class Borehole:
         outfile = open(fname, 'wb')
         dump(self, outfile)
         outfile.close()
+    
+    def __add__(self, other):
+        """Concatenate boreholes with overlapping intervals averaged."""
+        assert all([n1==n2 for n1,n2 in zip(self.names, other.names)]), "Boreholes logs must have the same names to be concatenated"
+
+        combined_logs = []
+        for log1, log2 in zip(self.logs, other.logs):
+            combined_log = log1 + log2
+            combined_logs.append(combined_log)
+
+        return self.__class__(combined_logs, elevation=self.elev, name=self.name, x=self.x, y=self.y)
+
 
 class Dart(Borehole):
     def __init__(self, export_folder, **kwargs):
