@@ -1,16 +1,15 @@
+from matplotlib.cm import Blues
+import matplotlib
 from abc import ABC, abstractmethod
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 import os
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
-
+from matplotlib import ticker
 
 
 class abcLog(ABC):
-    def __init__(self, values, depth_top, depth_bot, log_name, units='', xy=(0, 0)):
+    def __init__(self, values, depth_top, depth_bot, name, units='', xy=(0, 0), **kwargs):
         assert len(depth_bot) == len(
             depth_top), "top and bottom depth axis must have the same length"
         assert len(depth_bot) == len(
@@ -18,10 +17,12 @@ class abcLog(ABC):
         self.depth_top = np.array(depth_top)
         self.depth_bot = np.array(depth_bot)
         self.values = np.array(values)
-        self.name = log_name
+        self.name = name
         self.units = units
         self.x, self.y = xy
         self.elev = None
+
+
 
     @abstractmethod
     def plot(self, ax=None, **kwargs):
@@ -40,12 +41,11 @@ class abcLog(ABC):
         return len(self.values)
 
     def copy(self):
-        if len(self.values.shape)==1:
-            new_log = self.__class__(self.values, self.depth_top, self.depth_bot, self.name, units=self.units, xy=(self.x, self.y))
+        kwargs = {'units': self.units, 'xy': (self.x, self.y)}
+        if hasattr(self, 'x_axis'):
+            kwargs['x_axis'] = self.x_axis
 
-        
-        elif len(self.values.shape)==2:
-            new_log = self.__class__.two_dim(self.depth_top, self.x_axis, self.values, self.name, units=self.units, xy=(self.x, self.y))
+        new_log = self.__class__(self.values, self.depth_top, self.depth_bot, self.name, **kwargs)
         
         if self.elev is not None:
             new_log.elevation(self.elev)
@@ -63,6 +63,14 @@ class abcLog(ABC):
         for mem in vars(self).keys():
             if mem.startswith('depth'):
                 exec_str = f'self.{mem} = elev - self.{mem}'
+                exec(exec_str)
+        return self
+    
+    def add_offset(self, offset):
+        """add an offset to the log values"""
+        for mem in vars(self).keys():
+            if mem.startswith('depth'):
+                exec_str = f'self.{mem} += offset'
                 exec(exec_str)
         return self
 
@@ -96,28 +104,54 @@ class abcLog(ABC):
         dump(self, outfile)
         outfile.close()
 
-import plotly.colors as pcolors
+    def __add__(self, other):
+        """Concatenate logs with overlapping intervals averaged."""
+        assert self.name == other.name, "Logs must have the same name to be concatenated"
+
+        # Combine depth intervals and values
+        combined_depth_top = np.concatenate((self.depth_top, other.depth_top))
+        combined_depth_bot = np.concatenate((self.depth_bot, other.depth_bot))
+        combined_values = np.concatenate((self.values, other.values))
+
+        # # Sort by depth_top
+        sorted_indices = np.argsort(combined_depth_top)
+        combined_depth_top = combined_depth_top[sorted_indices]
+        combined_depth_bot = combined_depth_bot[sorted_indices]
+        combined_values = combined_values[sorted_indices]
+
+        # # Remove duplicates
+        unique_indices = np.unique(combined_depth_top, return_index=True)[1]
+        combined_depth_top = combined_depth_top[unique_indices]
+        combined_depth_bot = combined_depth_bot[unique_indices]
+        combined_values = combined_values[unique_indices]
+
+
+        # Create a new log with merged data
+        return self.__class__(
+            values=combined_values,
+            depth_top=combined_depth_top,
+            depth_bot=combined_depth_bot,
+            name=self.name,
+            units=self.units
+        )
+
 
 class Log(abcLog):
-    def __init__(self, values, depth_top, depth_bot, log_name, units='', colorscale=pcolors.sequential.Blues, **kwargs):
-        super().__init__(values, depth_top, depth_bot, log_name, units=units, **kwargs)
+    def __init__(self, values, depth_top, depth_bot, name, units='', cmap=Blues, **kwargs):
+        super().__init__(values, depth_top, depth_bot, name, units=units, **kwargs)
 
         if isinstance(self.values[0], int) or isinstance(self.values[0], float):
             norm_val = self.values / np.abs(self.values).max()
             if np.any(norm_val < 0.):
                 norm_val = 0.5 + 0.5*norm_val
-            self.color = {val: pcolors.find_intermediate_color(colorscale[0], colorscale[-1], nval, colortype='rgb')
-                  for val, nval in zip(self.values, norm_val)}
+            self.color = {val: cmap(nval)
+                          for val, nval in zip(self.values, norm_val)}
             
         self.source_method = None
 
-    def plot(self, fig=None, x_offset=0., **kwargs):
-        if fig is None:
-            fig = go.Figure()
-
-        if 'color' in kwargs:
-            linecolor = kwargs.pop('color')
-            kwargs['line'] = dict(color=linecolor)            
+    def plot(self, ax=None, x_offset=0., **kwargs):
+        if ax is None:
+            fig, ax = plt.subplots()
 
         cbar = kwargs.pop('cbar', False)
         if 'cmap' in kwargs:
@@ -129,66 +163,47 @@ class Log(abcLog):
                 zset = zset[::-1]
 
             if isinstance(dx, float) or isinstance(dx, int):
-                dx = np.ones_like(zset) * dx
+                dx = np.ones_like(zset)*dx
             cbar = True
 
-            X = np.outer(np.array([-0.5, 0, 0.5]), dx)
-            Z = np.repeat(zset, 3).reshape(-1, 3).T
-            V = np.repeat(self.values, 2).reshape(self.Nz, 2).T
-
-            fig.add_trace(go.Heatmap(
-                x=X.flatten() + x_offset,
-                y=Z.flatten(),
-                z=V.flatten(),
-                colorscale=cmap,
-                colorbar=dict(title=self.units) if cbar else None
-            ))
+            X = np.outer(np.array([-0.5,0.5]), dx)
+            Z = np.repeat(zset, 2).reshape(-1, 2).T
+            V = np.repeat(self.values, 1).reshape(self.Nz, 1).T
+            pcm = ax.pcolormesh(X+x_offset, Z, V,  cmap=cmap, **kwargs)
             tmpz = Z
 
             if border != '':
-                fig.add_trace(go.Scatter(
-                    x=X[0] * 2 + x_offset,
-                    y=Z[0],
-                    mode='lines',
-                    line=dict(color=border)
-                ))
-                fig.add_trace(go.Scatter(
-                    x=X[1] * 2 + x_offset,
-                    y=Z[1],
-                    mode='lines',
-                    name=self.name,
-                    line=dict(color=border)
-                ))
+                ax.plot(X[0]+x_offset, Z[0], border)
+                ax.plot(X[1]+x_offset, Z[1], border)
+                ax.plot(X[:,0]+x_offset, Z[:,0], border)
+                ax.plot(X[:,-1]+x_offset, Z[:,-1], border)
 
         elif np.all(self.depth_bot == self.depth_top):
-
-            fig.add_trace(go.Scatter(
-                x=self.values + x_offset,
-                y=self.z,
-                mode='lines',
-                **kwargs
-            ))
+            ax.plot(self.values+x_offset, self.z, label=self.name, **kwargs)
             tmpz = self.z
         else:
-            vmin, vmax = kwargs.pop('vmin', self.values.min()), kwargs.pop('vmax', self.values.max())
+            vmin, vmax = kwargs.pop('vmin', self.values.min()), kwargs.pop(
+                'vmax', self.values.max())
+            # this gives the plot a step-wise form, where the layer boundaries are correct.
             tmpz = np.vstack((self.depth_top, self.depth_bot)).T.flatten()
             tmpx = np.vstack((self.values, self.values)).T.flatten()
-            fig.add_trace(go.Scatter(
-                x=tmpx + x_offset,
-                y=tmpz,
-                name=self.name,
-                mode='lines',
-                **kwargs
-            ))
+            # kwargs.setdefault('label', self.name)
+            ax.plot(tmpx+x_offset, tmpz,  **kwargs)
             kwargs['vmin'], kwargs['vmax'] = vmin, vmax
-
         if self.units != '':
-            fig.update_xaxes(title_text=f'[{self.units}]')
+            ax.set_xlabel(self.name + f' [{self.units}]')
+        else:
+            ax.set_xlabel(self.name)
 
         if self.elev is None:
-            fig.update_yaxes(range=[tmpz.max(), tmpz.min()])
+            ax.set_ylim(tmpz.max(), tmpz.min())
 
-        return fig
+        if cbar:
+            res = (ax, pcm)
+        else:
+            res = ax
+
+        return res
 
     def plot_cyklo(self, ax=None, elevation=0., xy=(0, 0), unit_rad=1., dr=0.2, m_per_turn=100.):
         dr *= unit_rad
@@ -280,113 +295,71 @@ class Log(abcLog):
         self.source_method = 'geology'
 
         if color_dictionary is None:
-            n_types = len(np.unique(np.array(self.values)))
-            number_idx = np.linspace(0, 1, n_types)
-            geo2num = {geo: num for geo, num in zip(np.unique(np.array(self.values)), number_idx)}
-            numscale = [geo2num[geo] for geo in self.values]
-            colorscale = pcolors.carto.Earth
-            self.color = {val: pcolors.find_intermediate_color(colorscale[0], colorscale[-1], num, colortype='rgb') for val, num in zip(self.values, numscale)}
-            
+            import matplotlib.colors as mcolors
+            self.color = {x: c for x, c in zip(
+                np.unique(np.array(self.values)), mcolors.TABLEAU_COLORS.keys())}
         elif isinstance(color_dictionary, str):
             from matplotlib import colormaps
             uniq_geo = np.unique(np.array(self.values))
-            colors = colormaps[color_dictionary](np.linspace(0., 1., len(uniq_geo)))
-            self.color = {x: f'rgb({int(c[0]*255)}, {int(c[1]*255)}, {int(c[2]*255)})' for x, c in zip(uniq_geo, colors)}
+            colors = colormaps[color_dictionary](
+                np.linspace(0., 1., len(uniq_geo)))
+            self.color = {x: c for x, c in zip(uniq_geo, colors)}
         else:
             self.color = color_dictionary
 
-        def plot(dx=1., hatch=None, label=True):
-            fig = go.Figure()
-
+        def plot(ax=None, dx=1., hatch=None, label=True):
+            if ax is None:
+                fig, ax = plt.subplots()
             if hatch is None:
                 hatch = [None]*len(self.values)
 
             for i, (dpth_t, dpth_b, geo) in enumerate(zip(self.depth_top, self.depth_bot, self.values)):
-                layer_x = [-dx/2, dx/2, dx/2, -dx/2, -dx/2]
-                layer_y = [dpth_t, dpth_t, dpth_b, dpth_b, dpth_t]
-                fig.add_trace(go.Scatter(
-                    x=layer_x,
-                    y=layer_y,
-                    fill='toself',
-                    mode='lines',
-                    fillcolor=self.color[geo],
-                    line=dict(color=self.color[geo]),
-                    name=geo,
-                    showlegend=False
-                ))
-
-            fig.update_layout(
-                xaxis=dict(
-                    showticklabels=False,
-                    showgrid=False,
-                    zeroline=False
-                ),
-                yaxis=dict(
-                    autorange='reversed',
-                    title='depth [m]',
-                    showgrid=False,
-                    zeroline=False
-                ),
-                shapes=[
-                    dict(
-                        type="rect",
-                        x0=-dx/2,
-                        y0=max(self.z)+max(self.thickness),
-                        x1=dx/2,
-                        y1=0,
-                        line=dict(
-                            color="Black",
-                            width=2
-                        )
-                    )
-                ]
-            )
+                layer = np.array([[-dx/2, dpth_t],     [dx/2, dpth_t],
+                                  [dx/2, dpth_b],  [-dx/2, dpth_b],
+                                  [-dx/2, dpth_t]])
+                poly = Polygon(
+                    layer, facecolor=self.color[geo], hatch=hatch[i])
+                ax.add_patch(poly)
+            ax.set_xlim([-dx/2, dx/2])
+            ax.set_ylim(max(self.z)+max(self.thickness), 0)
+            ax.set_xticks([])
 
             if label:
-                fig.update_yaxes(
-                    tickmode='array',
-                    tickvals=self.z,
-                    ticktext=self.values,
-                    ticks="outside",
-                    ticklen=10,
-                    tickcolor='black'
-                )
+                ax.yaxis.set_label_position("right")
+                ax.yaxis.tick_right()
+                axgeo = ax.secondary_yaxis('left')
+                axgeo.set_yticks(self.z)
+                labels = [x.replace(' ', '\n') for x in self.values]
+                
+                # axgeo.set_yticklabels(labels)
+                axgeo.set_yticklabels(labels, rotation=45); axgeo.tick_params(axis='y', pad=-2)
 
-            return fig
-
+            ax.set_ylabel('depth [m]')
+            return ax
         self.plot = plot
         return self
 
     @classmethod
-    def two_dim(cls, depth, x_axis, values, name, **kwargs):
-        assert len(values.shape) == 2, "data is not 2d, try using plain Log class"
-        self = cls(values, depth, depth, name, **kwargs)
-        self.x_axis = x_axis
+    def two_dim(cls, values, depth_top, depth_bot, name, x_axis, **kwargs):
+        class Log2D(cls):
+            def __init__(self, values, depth_top, depth_bot, name, **kwargs):
+                assert len(values.shape) == 2, "data is not 2d, try using plain Log class"
+                super().__init__(values, depth_top, depth_bot, name, **kwargs)
+                self.x_axis = kwargs.get('x_axis', x_axis)
 
-        def plot(ax=None, **kwargs):
-            cbar = kwargs.pop('cbar', False)
-            if ax is None:
-                fig = go.Figure()
-            else:
-                fig = ax.figure
-
-            fig.add_trace(go.Heatmap(
-                x=self.x_axis,
-                y=self.z,
-                z=self.values,
-                colorbar=dict(title=self.units, orientation='h', y=-0.2) if cbar else None,
-                **kwargs
-            ))
-            if self.elev is None:
-                fig.update_yaxes(autorange='reversed')
-                fig.update_yaxes(title_text='depth [m]')
-            else:
-                fig.update_yaxes(title_text='elevation [m]')
-
-            return fig
-
-        self.plot = plot
-        return self
+            def plot(self, ax=None, **kwargs):
+                cbar = kwargs.pop('cbar', False)
+                if ax is None:
+                    fig, ax = plt.subplots()
+                else:
+                    fig = ax.figure
+                pcm=ax.pcolor(self.x_axis, self.z, self.values, **kwargs)
+                
+                if cbar: res = (ax,pcm)
+                else: res = ax
+                return res
+        kwargs.setdefault('x_axis', x_axis)
+        return Log2D(values, depth_top, depth_bot, name, **kwargs)
 
 
 class Borehole: 
@@ -411,6 +384,12 @@ class Borehole:
     def elevation(self):
         for logs in self.logs:
             logs.elevation(self.elev)
+    
+    def add_offset(self, offset):
+        """add an offset to the log values"""
+        for logs in self.logs:
+            logs.add_offset(offset)
+        return self
 
     def __iter__(self):
         return iter(self.logs)
@@ -421,11 +400,11 @@ class Borehole:
 
     @property
     def x(self):
-        return mean([lg.x for lg in self])
+        return np.mean(np.array([lg.x for lg in self]))
 
     @property
     def y(self):
-        return mean([lg.y for lg in self])
+        return np.mean(np.array([lg.y for lg in self]))
 
     def __getitem__(self, logname):
         i = self.names.index(logname)
@@ -433,28 +412,24 @@ class Borehole:
 
         return tmp_log
 
-    def plot(self, fig=None):
-        if fig is None:
-            fig = make_subplots(rows=1, cols=len(self.logs), shared_yaxes=True, subplot_titles=[log.name for log in self.logs])
+    def plot(self, axs=None):
+        if axs is None:
+            fig, axs = plt.subplots(1, len(self.logs), sharey=True)
+        else:
+            fig = axs[0].figure
+
+        if isinstance(axs, matplotlib.axes._axes.Axes):
+            axs = np.array([axs])
 
         for i, log in enumerate(self.logs):
-            log_fig = log.plot()
-            for trace in log_fig.data:
-                fig.add_trace(trace, row=1, col=i+1)
-            
+            log.plot(ax=axs[i])
+            # axs[i].set_title(log.name)
             if self.elev != 0:
-                fig.update_yaxes(
-                    secondary_y=True,
-                    row=1, col=i+1,
-                    secondary_y_title_text='Elevation',
-                    secondary_y_functions=(self.elev2depth, self.depth2elev)
-                )
-            
+                ax2 = axs[i].secondary_yaxis(
+                    'right', functions=(self.elev2depth, self.depth2elev))
             if isinstance(log, Log) and log.source_method == 'geology':
-                fig.update_yaxes(scaleanchor="x", scaleratio=0.25, row=1, col=i+1)
-
-        fig.update_layout(height=600, width=100*len(self.logs))
-        return fig
+                axs[i].set_aspect(0.25)
+        return axs
 
     def copy(self):
         from copy import deepcopy
@@ -489,9 +464,22 @@ class Borehole:
         outfile = open(fname, 'wb')
         dump(self, outfile)
         outfile.close()
+    
+    def __add__(self, other):
+        """Concatenate boreholes with overlapping intervals averaged."""
+        assert all([n1==n2 for n1,n2 in zip(self.names, other.names)]), "Boreholes logs must have the same names to be concatenated"
+
+        combined_logs = []
+        for i, (log1,log2) in enumerate(zip(self.logs, other.logs)):
+            combined_log = log1 + log2
+            combined_logs.append(combined_log)
+
+        return self.__class__(combined_logs, elevation=self.elev, name=self.name, x=self.x, y=self.y)
+
 
 class Dart(Borehole):
-    def __init__(self, export_folder, **kwargs):
+    @classmethod
+    def from_folder(cls, export_folder, **kwargs):
         logs = []
 
         bh_name = os.path.split(export_folder)[-1]
@@ -499,23 +487,20 @@ class Dart(Borehole):
         raw = np.genfromtxt(export_folder+'_1Dvectors.txt', names=True)
         for name in raw.dtype.names:
             if name not in ['depth', 'unix_time', 'board_temp', 'magnet_temp']:
-                tmp_log = Log(raw[name], raw['depth']-0.22 *
-                              0.5, raw['depth']+0.22*0.5, name)
+                tmp_log = Log(raw[name], raw['depth']-0.125, raw['depth']+0.125, name)
                 logs.append(tmp_log)
 
         SE_decay = np.genfromtxt(export_folder+'_SE_decay.txt')
-        SE_time = np.genfromtxt(export_folder+'_SE_decay_time.txt')
+        SE_time  = np.genfromtxt(export_folder+'_SE_decay_time.txt')
         # bit of a hack
-        logs.append(Log.two_dim(logs[-1].z, SE_time*1000,
-                    SE_decay[:, :-1], 'SE decay'))
+        logs.append(Log.two_dim(SE_decay[:,:-1], logs[-1].depth_top, logs[-1].depth_bot, 'SE decay', SE_time*1000))
 
         T2_dist = np.genfromtxt(export_folder+'_T2_dist.txt')*100
         T2_dist_bins = 10**np.genfromtxt(export_folder+'_T2_bins_log10s.txt')
         # bit of a hack
-        logs.append(Log.two_dim(
-            logs[-1].z, T2_dist_bins, T2_dist[:, 1:], 'T2 dist'))
+        logs.append(Log.two_dim(T2_dist[:,1:], logs[-1].depth_top, logs[-1].depth_bot, 'T2 dist', T2_dist_bins))
 
-        super().__init__(logs, **kwargs)
+        self = cls(logs, **kwargs)
 
         tmp = self['SE decay']
         se_fwr = tmp.copy()
@@ -533,55 +518,32 @@ class Dart(Borehole):
         self.logs.append(se_fwr)
         self.logs.append(se_res)
         self.logs.append(misfit)
-
-        self.n_logs = len(self.logs)
-
-
         self.export_folder = export_folder
+        return self
 
-    def plot_wc(self, fig=None, legend=False):
-        if fig is None:
-            fig = go.Figure()
+    @property
+    def n_logs(self):
+        return len(self.logs)
 
+    def plot_wc(self, ax=None, legend=True):
+        if ax is None:
+            fig, ax = plt.subplots()
+        else:
+            fig = ax.figure
         base = np.zeros_like(self['freef'].values)
-
-        # Plot total
-        fig.add_trace(go.Scatter(
-            x=self['totalf'].values,
-            y=self['totalf'].z,
-            mode='lines',
-            name='total',
-            line=dict(color='black')
-        ))
-
-        # Fill free
-        fig.add_trace(go.Scatter(
-            x=self['freef'].values,
-            y=self['totalf'].z,
-            fill='tozeroy',
-            name='free',
-            fillcolor='blue',
-            mode='none'
-        ))
-
+        ax.plot(self['totalf'].values,
+                self['totalf'].z,  'k-', label='total',)
+        ax.fill_betweenx(
+            self['totalf'].z, base, self['freef'].values, label='free', facecolor='b')
         base += self['freef'].values
-
-        # Fill capillary
-        fig.add_trace(go.Scatter(
-            x=base + self['capf'].values,
-            y=self['totalf'].z,
-            fill='tonexty',
-            name='cap.',
-            fillcolor='cyan',
-            mode='none'
-        ))
-
+        ax.fill_betweenx(self['totalf'].z, base, base +
+                            self['capf'].values, label='cap.', facecolor='cyan')
         base += self['capf'].values
         ax.fill_betweenx(self['totalf'].z, base, base +
                             self['clayf'].values, label='clay', facecolor='bisque')
         if legend:
             ax.legend(fontsize='small')
-        ax.set_xlim(0, .75)
+        ax.set_xlim(0, 1.)
         ax.set_xlabel('Water Content [ratio]')
         ax.set_ylabel('Depth [m]')
         return ax
@@ -589,12 +551,13 @@ class Dart(Borehole):
     def plot(self, axs=None):
         n_extra = len(self.logs)-self.n_logs
         if axs is None:
-            fig,axs = plt.subplots(1, n_extra+self.n_logs, figsize=(15, 5))
-        # if legend:
-        #     fig.update_layout(showlegend=True, legend=dict(font=dict(size=10)))
-        # else:
+
+            width_ratios = [1]*n_extra + [2, 2, 2, 1, 0.75]
+            fig, axs = plt.subplots(
+                1, n_extra+5, sharey=True, width_ratios=width_ratios, figsize=(11.69,8.27),layout='constrained')
+        else:
             assert len(axs.flatten(
-            )) >= 6, "not enough subplots provided for a dart logging data display"
+            )) >= 5, "not enough subplots provided for a dart logging data display"
             fig = axs.flatten()[0].figure
 
         for i in range(n_extra):
@@ -605,13 +568,12 @@ class Dart(Borehole):
         axs[n_extra].grid(visible=True,which='major',axis='both')
         axs[n_extra].grid(visible=True,which='minor',axis='x')
         
-        #self['SE decay'].x_axis *= 1000
         _, pcm2 = self['SE decay'].plot(ax=axs[n_extra+1], cbar=True)
         axs[n_extra+1].set_xlabel('SE decay [ms]')
         plt.colorbar(pcm2, ax=axs[n_extra+1], orientation='horizontal',location='top',label='Amplitude [%]')
         
         _, pcm = self['T2 dist'].plot(ax=axs[n_extra+2], cmap='Blues', cbar=True);
-        cb = plt.colorbar(pcm, ax=axs[n_extra+2], orientation='horizontal',location='top',label='Water Content [ratio]')
+        cb = plt.colorbar(pcm, ax=axs[n_extra+2], orientation='horizontal',location='top',label='Water Content [%]')
         tick_locator = ticker.MaxNLocator(nbins=4)
         cb.locator = tick_locator
         cb.update_ticks()
@@ -639,6 +601,7 @@ class Dart(Borehole):
         #axs[n_extra+4].legend(fontsize='x-small')
         self['noise'].plot(ax=axs[n_extra+4])
         axs[n_extra+4].set_xlabel('noise [%]')
+        axs[n_extra+4].set_xlim(0., 20)
         axs[n_extra+0].set_ylim(self['totalf'].z.max(),
                                 self['totalf'].z.min())
         axs[n_extra+4].yaxis.set_label_position("right")
@@ -663,10 +626,10 @@ class Dart(Borehole):
         self.logs[self.names.index('totalf')]  = lg3.copy()
 
     def t2dist_forward(self):
-        times = self['SE decay'].x_axis
-        T2val =  self['T2 dist'].x_axis
-        K = np.exp(-times[:,None]/T2val[None,:])
-        return 100.*(K @ self['T2 dist'].values.T).T
+        times = self['SE decay'].x_axis/1e3
+        T2val = self['T2 dist'].x_axis
+        K = np.exp(-times[None,:]/T2val[:,None])
+        return np.einsum('ij,jk->ik', self['T2 dist'].values, K)
     
     def fit_monoexponential(self, smooth_data=None):
         data = self['SE decay'].values
@@ -715,6 +678,7 @@ class Dart(Borehole):
                 self.logs.append(new_log)
                 self.n_logs += 1
         return WC,T2
+
 
 class ProjectionLine:
     def __init__(self, x, y):
@@ -929,6 +893,7 @@ class Section:
         else:
             del kwargs['max_bin_skip']
         X,Z,Val = self.X, self.Z, self.Val
+        grid = kwargs.pop('grid', True)
 
 
         cmap = kwargs.pop('cmap', 'rainbow' if self.name == 'WC' else 'seismic')
@@ -942,7 +907,8 @@ class Section:
             cbar = kwargs.pop('cbar', None)
             pcm = ax.pcolormesh(X, Z, Val, shading='auto', cmap=cmap, **kwargs)
             kwargs['cbar']=cbar
-
+        if grid=='return':
+            return ax, (X,Z,Val)
         if kwargs.get('cbar', True)=='return':
             return ax, pcm
         elif kwargs.get('cbar', True):
@@ -1052,15 +1018,3 @@ class Section:
             xsec = xsec[keep, :]
             X,Z = np.meshgrid(X[:,0], log_redisc.z)
             return X,Z, xsec.T
-
-            return X, Z, xsec
-        
-
-if __name__ == '__main__':
-    # lg = Log.standard(np.random.rand(10), np.arange(10)[1:], 'random')
-    x = np.linspace(0, 1, 101)
-    z = np.linspace(0, 40, 61)
-    val = np.sin(x[:, None] + z[None, :]).T
-    lg2 = Log.two_dim(z, x, val, 'random2')
-    fig = lg2.plot(colorscale='Viridis')
-    fig.show()
