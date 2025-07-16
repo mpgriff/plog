@@ -589,10 +589,10 @@ class Dart(Borehole):
     def plot(self, axs=None):
         n_extra = len(self.logs)-self.n_logs
         if axs is None:
-
-        if legend:
-            fig.update_layout(showlegend=True, legend=dict(font=dict(size=10)))
-        else:
+            fig,axs = plt.subplots(1, n_extra+self.n_logs, figsize=(15, 5))
+        # if legend:
+        #     fig.update_layout(showlegend=True, legend=dict(font=dict(size=10)))
+        # else:
             assert len(axs.flatten(
             )) >= 6, "not enough subplots provided for a dart logging data display"
             fig = axs.flatten()[0].figure

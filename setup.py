@@ -26,14 +26,14 @@ else:
 
 
 setup(
-    name='plogly',
+    name='plog',
     author='Matt Griffiths',
     author_email='mpg@geo.au.dk',
     packages=find_packages('src'),
     package_dir={'':'src'},
-    install_requires=['numpy', 'plotly', 'dill'],
+    install_requires=['numpy', 'matplotlib', 'dill'],
     version=__version__,
-    license='MIT?',
+    license='MIT',
     description='plot logs',
     python_requires=">=3.8",
 )
