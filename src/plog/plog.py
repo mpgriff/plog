@@ -23,8 +23,6 @@ class abcLog(ABC):
         self.x, self.y = xy
         self.elev = None
 
-
-
     @abstractmethod
     def plot(self, ax=None, **kwargs):
         pass
@@ -65,14 +63,6 @@ class abcLog(ABC):
         for mem in vars(self).keys():
             if mem.startswith('depth'):
                 exec_str = f'self.{mem} = elev - self.{mem}'
-                exec(exec_str)
-        return self
-    
-    def add_offset(self, offset):
-        """add an offset to the log values"""
-        for mem in vars(self).keys():
-            if mem.startswith('depth'):
-                exec_str = f'self.{mem} += offset'
                 exec(exec_str)
         return self
 
@@ -421,12 +411,6 @@ class Borehole:
     def elevation(self):
         for logs in self.logs:
             logs.elevation(self.elev)
-    
-    def add_offset(self, offset):
-        """add an offset to the log values"""
-        for logs in self.logs:
-            logs.add_offset(offset)
-        return self
 
     def __iter__(self):
         return iter(self.logs)
@@ -515,8 +499,8 @@ class Dart(Borehole):
         raw = np.genfromtxt(export_folder+'_1Dvectors.txt', names=True)
         for name in raw.dtype.names:
             if name not in ['depth', 'unix_time', 'board_temp', 'magnet_temp']:
-                tmp_log = Log(raw[name], raw['depth']-0.25 *
-                              0.5, raw['depth']+0.25*0.5, name)
+                tmp_log = Log(raw[name], raw['depth']-0.22 *
+                              0.5, raw['depth']+0.22*0.5, name)
                 logs.append(tmp_log)
 
         SE_decay = np.genfromtxt(export_folder+'_SE_decay.txt')
@@ -593,91 +577,76 @@ class Dart(Borehole):
         ))
 
         base += self['capf'].values
+        ax.fill_betweenx(self['totalf'].z, base, base +
+                            self['clayf'].values, label='clay', facecolor='bisque')
+        if legend:
+            ax.legend(fontsize='small')
+        ax.set_xlim(0, .75)
+        ax.set_xlabel('Water Content [ratio]')
+        ax.set_ylabel('Depth [m]')
+        return ax
 
-        # Fill clay
-        fig.add_trace(go.Scatter(
-            x=base + self['clayf'].values,
-            y=self['totalf'].z,
-            fill='tonexty',
-            name='clay',
-            fillcolor='bisque',
-            mode='none'
-        ))
+    def plot(self, axs=None):
+        n_extra = len(self.logs)-self.n_logs
+        if axs is None:
 
         if legend:
             fig.update_layout(showlegend=True, legend=dict(font=dict(size=10)))
         else:
-            fig.update_layout(showlegend=False)
-
-        fig.update_xaxes(range=[0, 1], title_text='Water Content [%]')
-        fig.update_yaxes(title_text='depth [m]')
-
-        return fig
-
-    def plot(self, fig=None):
-        n_extra = len(self.logs) - self.n_logs
-
-        if fig is None:
-            fig = make_subplots(
-                rows=1, cols=n_extra + 5, shared_yaxes=True,
-                column_widths=[0.5]*n_extra + [1, 1, 3, 1, 1],
-                subplot_titles=[log.name for log in self.logs[:n_extra]] + ['Water Content', 'SE decay', 'T2 dist', 'K values', 'Noise'],
-                horizontal_spacing=0.05,
-                vertical_spacing=0.05
-            )
-
-        wc_fig = self.plot_wc()
-        for trace in wc_fig.data:
-            fig.add_trace(trace, row=1, col=n_extra+1)
-        fig.update_xaxes(range=[0, 1], title_text='Water Content [%]', row=1, col=n_extra+1)
+            assert len(axs.flatten(
+            )) >= 6, "not enough subplots provided for a dart logging data display"
+            fig = axs.flatten()[0].figure
 
         for i in range(n_extra):
-            log_fig = self.logs[i].plot()
-            for trace in log_fig.data:
-                fig.add_trace(trace, row=1, col=i+1)
-                fig.update_xaxes(tickvals=log_fig.layout.xaxis.tickvals, ticktext=log_fig.layout.xaxis.ticktext, row=1, col=i+1)
-                fig.update_yaxes(tickvals=log_fig.layout.yaxis.tickvals, ticktext=log_fig.layout.yaxis.ticktext, row=1, col=i+1)
+            self.logs[i].plot(ax=axs[i])
+        self.plot_wc(ax=axs[n_extra])
+        axs[n_extra].locator_params(axis='x',nbins=8)
+        #axs[n_extra].set_axisbelow(True)
+        axs[n_extra].grid(visible=True,which='major',axis='both')
+        axs[n_extra].grid(visible=True,which='minor',axis='x')
+        
+        #self['SE decay'].x_axis *= 1000
+        _, pcm2 = self['SE decay'].plot(ax=axs[n_extra+1], cbar=True)
+        axs[n_extra+1].set_xlabel('SE decay [ms]')
+        plt.colorbar(pcm2, ax=axs[n_extra+1], orientation='horizontal',location='top',label='Amplitude [%]')
+        
+        _, pcm = self['T2 dist'].plot(ax=axs[n_extra+2], cmap='Blues', cbar=True);
+        cb = plt.colorbar(pcm, ax=axs[n_extra+2], orientation='horizontal',location='top',label='Water Content [ratio]')
+        tick_locator = ticker.MaxNLocator(nbins=4)
+        cb.locator = tick_locator
+        cb.update_ticks()
+        axs[n_extra+2].grid(True)
 
+        self['mlT2'].plot(ax=axs[n_extra+2], color='r')
+        axs[n_extra+2].set_xlabel('T2 dist [s]')
+        axs[n_extra+2].set_xscale('log')
+        axs[n_extra+2].axvline(0.003,linestyle='dashed')
+        axs[n_extra+2].axvline(0.033,linestyle='dashed')
 
-        se_decay_fig = self['SE decay'].plot(colorscale='Viridis', showscale=False)
-        for trace in se_decay_fig.data:
-            fig.add_trace(trace, row=1, col=n_extra+2)
-        fig.update_xaxes(title_text='SE decay [s]', row=1, col=n_extra+2)
-
-        t2_dist_fig = self['T2 dist'].plot(showscale=False, colorscale='Greens')
-        for trace in t2_dist_fig.data:
-            fig.add_trace(trace, row=1, col=n_extra+3)
-        mlT2_fig = self['mlT2'].plot(color='red')
-        for trace in mlT2_fig.data:
-            fig.add_trace(trace, row=1, col=n_extra+3)
-        fig.update_xaxes(title_text='T2 dist [s]', type='log', row=1, col=n_extra+3)
+        tmp_logs = self.names
+        tmp_logs.pop(tmp_logs.index('T2 dist'))
+        tmp_logs.pop(tmp_logs.index('SE decay'))
+        tmp_logs.pop(tmp_logs.index('noise'))
 
         for param in ['Ksdr', 'Ktc', 'Ksoe']:
-            fig.add_trace(go.Scatter(
-                x=self[param].values,
-                y=self[param].z,
-                mode='lines',
-                name=param,
-                line_shape='hv'
-            ), row=1, col=n_extra+4)
-        fig.update_xaxes(title_text='K [m/day]', type='log', row=1, col=n_extra+4)
-        fig.update_layout(showlegend=True)#, legend=dict(font=dict(size='x-small')))
+            axs[n_extra+3].semilogx(self[param].values,
+                                    self[param].z, drawstyle='steps-mid', label=param)
+        axs[n_extra+3].set_xlabel('K [m/day]')
+        axs[n_extra+3].set_axisbelow(True)
+        axs[n_extra+3].grid(True)
 
-        noise_fig = self['noise'].plot()
-        for trace in noise_fig.data:
-            fig.add_trace(trace, row=1, col=n_extra+5)
-        fig.update_xaxes(title_text='noise [%]', row=1, col=n_extra+5)
-
-        fig.update_yaxes(title_text='depth [m]', row=1, col=n_extra+5)
-        fig.update_yaxes(autorange='reversed', row=1, col=n_extra+1)
-
-        # for i in range(1, n_extra + 6):
-        #     fig.update_xaxes(showline=True, linewidth=1, linecolor='black', row=1, col=i)
-        #     fig.update_yaxes(showline=True, linewidth=1, linecolor='black', row=1, col=i)
-
-
-        return fig
-
+        axs[n_extra+3].legend(fontsize='x-small')
+        #axs[n_extra+4].legend(fontsize='x-small')
+        self['noise'].plot(ax=axs[n_extra+4])
+        axs[n_extra+4].set_xlabel('noise [%]')
+        axs[n_extra+0].set_ylim(self['totalf'].z.max(),
+                                self['totalf'].z.min())
+        axs[n_extra+4].yaxis.set_label_position("right")
+        axs[n_extra+4].yaxis.tick_right()
+        axs[n_extra+4].yaxis.set_label_text('depth [m]')
+        axs[n_extra+4].set_axisbelow(True)
+        axs[n_extra+4].grid(True)
+        return axs
 
     def t2_trim(self, T2_min):
         # new_bh = self.copy()
