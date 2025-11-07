@@ -408,8 +408,7 @@ class Borehole:
 
     def __getitem__(self, logname):
         i = self.names.index(logname)
-        tmp_log = self.logs[i].copy()
-
+        tmp_log = self.logs[i]#.copy()
         return tmp_log
 
     def plot(self, axs=None):
@@ -478,16 +477,18 @@ class Borehole:
 
 
 class Dart(Borehole):
+
     @classmethod
     def from_folder(cls, export_folder, **kwargs):
         logs = []
 
         bh_name = os.path.split(export_folder)[-1]
         # bh_name = ''
+        dz = kwargs.pop('dz', 0.25)
         raw = np.genfromtxt(export_folder+'_1Dvectors.txt', names=True)
         for name in raw.dtype.names:
             if name not in ['depth', 'unix_time', 'board_temp', 'magnet_temp']:
-                tmp_log = Log(raw[name], raw['depth']-0.125, raw['depth']+0.125, name)
+                tmp_log = Log(raw[name], raw['depth']-dz/2., raw['depth']+dz/2., name)
                 logs.append(tmp_log)
 
         SE_decay = np.genfromtxt(export_folder+'_SE_decay.txt')
@@ -501,6 +502,7 @@ class Dart(Borehole):
         logs.append(Log.two_dim(T2_dist[:,1:], logs[-1].depth_top, logs[-1].depth_bot, 'T2 dist', T2_dist_bins))
 
         self = cls(logs, **kwargs)
+
 
         tmp = self['SE decay']
         se_fwr = tmp.copy()
@@ -568,9 +570,11 @@ class Dart(Borehole):
         axs[n_extra].grid(visible=True,which='major',axis='both')
         axs[n_extra].grid(visible=True,which='minor',axis='x')
         
-        _, pcm2 = self['SE decay'].plot(ax=axs[n_extra+1], cbar=True)
+        noise_bnd = self['noise'].values.max()
+        _, pcm2 = self['SE decay'].plot(ax=axs[n_extra+1], vmin=-noise_bnd, vmax=None, cbar=True)
         axs[n_extra+1].set_xlabel('SE decay [ms]')
         plt.colorbar(pcm2, ax=axs[n_extra+1], orientation='horizontal',location='top',label='Amplitude [%]')
+        axs[n_extra+1].set_xscale('log')
         
         _, pcm = self['T2 dist'].plot(ax=axs[n_extra+2], cmap='Blues', cbar=True);
         cb = plt.colorbar(pcm, ax=axs[n_extra+2], orientation='horizontal',location='top',label='Water Content [%]')
@@ -590,7 +594,8 @@ class Dart(Borehole):
         tmp_logs.pop(tmp_logs.index('SE decay'))
         tmp_logs.pop(tmp_logs.index('noise'))
 
-        for param in ['Ksdr', 'Ktc', 'Ksoe']:
+        # for param in ['Ksdr', 'Ktc', 'Ksoe']:
+        for param in ['Ksdr', 'Ksoe']:
             axs[n_extra+3].semilogx(self[param].values,
                                     self[param].z, drawstyle='steps-mid', label=param)
         axs[n_extra+3].set_xlabel('K [m/day]')
@@ -676,8 +681,41 @@ class Dart(Borehole):
                 self.logs[idx] = new_log
             else:
                 self.logs.append(new_log)
-                self.n_logs += 1
+                # self.n_logs += 1
         return WC,T2
+    
+    def recalculate_products(self, new_T2):
+        assert new_T2.Nz == self['T2 dist'].Nz, "new T2_dist must have same number of layers"
+        new_self = self.copy()
+        T2 = new_T2.x_axis
+        t2_new = new_T2.values/1e2
+
+        new_self.logs[new_self.names.index('totalf')].values = t2_new.sum(axis=1)*1.
+        clay_slice = (T2<=0.003)
+        new_self.logs[new_self.names.index('clayf')].values = t2_new[:, clay_slice].sum(axis=1)*1.
+        cap_slice = (T2>0.003) & (T2<=0.033)
+        new_self.logs[new_self.names.index('capf')].values = t2_new[:, cap_slice].sum(axis=1)*1.
+        free_slice = (T2>0.033)
+        new_self.logs[new_self.names.index('freef')].values = t2_new[:, free_slice].sum(axis=1)*1.
+        mlT2 = 10**(np.nansum(np.log10(T2[None, :])*t2_new, axis=1)/np.nansum(t2_new, axis=1))
+        # mlT2[len(mlT2)//2] = 1.
+        new_self.logs[new_self.names.index('mlT2')].values = mlT2*1.
+        
+
+        t2_new *= 1e2
+        new_self.logs[new_self.names.index('T2 dist')].values = t2_new*1.
+        new_self.logs[new_self.names.index('T2 dist')].x_axis = T2*1.
+        new_self.logs[new_self.names.index('SE synth')].values = new_self.t2dist_forward()*1.
+        new_self.logs[new_self.names.index('SE residual')].values = new_self['SE decay'].values - new_self['SE synth'].values
+        new_self.logs[new_self.names.index('misfit')].values = np.mean((new_self['SE decay'].values - new_self['SE synth'].values)**2 / new_self['noise'].values[:,None]**2, axis=1)**0.5
+
+        new_self.logs[new_self.names.index('Ksdr')].values = 8900.*mlT2**2*new_self['totalf'].values
+
+        return new_self
+
+
+
+
 
 
 class ProjectionLine:
