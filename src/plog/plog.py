@@ -396,24 +396,48 @@ class Dart(Borehole):
 
     @classmethod
     def from_folder(cls, export_folder, **kwargs):
+        export_folder = export_folder.replace('\\', '/')
+        
+        # check for old style loading.
+        tmp_folder,bh_name = os.path.split(export_folder)
+        bh_name2 = os.path.split(tmp_folder)[-1]
+        if bh_name==bh_name2:
+            export_folder = tmp_folder+'/'
+        
+        
+        if not export_folder.endswith('/'):
+            export_folder += '/'
+
         logs = []
 
-        bh_name = os.path.split(export_folder)[-1]
-        # bh_name = ''
+        
+
+        folder_contents = [export_folder+fname for fname in os.listdir(export_folder) if fname.endswith('.txt')]
+        def get_fullpath(filesuffix):
+            if not filesuffix.endswith('.txt'): filesuffix += '.txt'
+            result = None
+            for fname in folder_contents:
+                if fname.endswith(filesuffix): 
+                    result = fname
+                    break
+            if result is None:
+                raise FileNotFoundError(f"{export_folder}...{filesuffix}")
+            return result
+        
         dz = kwargs.pop('dz', 0.25)
-        raw = np.genfromtxt(export_folder+'_1Dvectors.txt', names=True)
+        raw = np.genfromtxt(get_fullpath('1Dvectors.txt'), names=True)
         for name in raw.dtype.names:
             if name not in ['depth', 'unix_time', 'board_temp', 'magnet_temp']:
                 tmp_log = Log(raw[name], raw['depth']-dz/2., raw['depth']+dz/2., name)
                 logs.append(tmp_log)
 
-        SE_decay = np.genfromtxt(export_folder+'_SE_decay.txt')
-        SE_time  = np.genfromtxt(export_folder+'_SE_decay_time.txt')
+        SE_decay = np.genfromtxt(get_fullpath('SE_decay.txt'))
+        SE_time  = np.genfromtxt(get_fullpath('SE_decay_time.txt'))
         # bit of a hack
         logs.append(Log(SE_decay[:,:-1], logs[-1].depth_top, logs[-1].depth_bot, 'SE decay', x_axis=SE_time*1000))
 
-        T2_dist = np.genfromtxt(export_folder+'_T2_dist.txt')*100
-        T2_dist_bins = 10**np.genfromtxt(export_folder+'_T2_bins_log10s.txt')
+        T2_dist      =     np.genfromtxt(get_fullpath('T2_dist.txt'))*100
+        T2_dist_bins = 10**np.genfromtxt(get_fullpath('T2_bins_log10s.txt'))
         # bit of a hack
         logs.append(Log(T2_dist[:,1:], logs[-1].depth_top, logs[-1].depth_bot, 'T2 dist', x_axis=T2_dist_bins))
 
