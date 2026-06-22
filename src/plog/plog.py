@@ -1,34 +1,104 @@
-from matplotlib.cm import Blues
 import matplotlib
-from abc import ABC, abstractmethod
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 import os
 from matplotlib import ticker
 
-
-class abcLog(ABC):
-    def __init__(self, values, depth_top, depth_bot, name, units='', xy=(0, 0), **kwargs):
-        assert len(depth_bot) == len(
-            depth_top), "top and bottom depth axis must have the same length"
-        assert len(depth_bot) == len(
-            values),     "log valuess and depth axes must have the same length"
-        self.depth_top = np.array(depth_top)
-        self.depth_bot = np.array(depth_bot)
-        self.values = np.array(values)
-        self.name = name
-        self.units = units
-        self.x, self.y = xy
-        self.elev = None
+from nosj import nosj
+from typing import Dict, List
+from functools import partial
 
 
+def plot2d(self, ax=None, **kwargs):
+    cbar = kwargs.pop('cbar', False)
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+    pcm=ax.pcolor(self.x_axis, self.z, self.values, **kwargs)
+    
+    if cbar: res = (ax,pcm)
+    else: res = ax
+    return res
+
+def plot_geo(self, ax=None, dx=1., hatch=None, label=True):
+    if ax is None:
+        fig, ax = plt.subplots()
+    if hatch is None:
+        hatch = [None]*len(self.values)
+
+    for i, (dpth_t, dpth_b, geo) in enumerate(zip(self.depth_top, self.depth_bot, self.values)):
+        layer = np.array([[-dx/2, dpth_t],     [dx/2, dpth_t],
+                            [dx/2, dpth_b],  [-dx/2, dpth_b],
+                            [-dx/2, dpth_t]])
+        poly = Polygon(
+            layer, facecolor=self.color[geo], hatch=hatch[i])
+        ax.add_patch(poly)
+    ax.set_xlim([-dx/2, dx/2])
+    ax.set_ylim(max(self.z)+max(self.thickness), 0)
+    ax.set_xticks([])
+
+    if label:
+        ax.yaxis.set_label_position("right")
+        ax.yaxis.tick_right()
+        axgeo = ax.secondary_yaxis('left')
+        axgeo.set_yticks(self.z)
+        labels = [x.replace(' ', '\n') for x in self.values]
+        
+        # axgeo.set_yticklabels(labels)
+        axgeo.set_yticklabels(labels, rotation=45); axgeo.tick_params(axis='y', pad=-2)
+
+    ax.set_ylabel('depth [m]')
+    return ax
 
 
+@nosj
+class Log: 
+    values   : np.ndarray
+    depth_top: np.ndarray
+    depth_bot: np.ndarray
+    name     : str
+    units    : str=""
+    x        : float=None
+    y        : float=None
+    elev     : float=None
+    cmap     : str='viridis'
+    x_axis   : np.ndarray=None
+    color    : dict=None
 
-    @abstractmethod
-    def plot(self, ax=None, **kwargs):
-        pass
+    def __post_init__(self):
+        assert len(self.depth_bot) == len(
+            self.depth_top), "top and bottom depth axis must have the same length"
+        assert len(self.depth_bot) == len(
+            self.values),     "log valuess and depth axes must have the same length"
+        
+        # if not isinstance(self.values, np.ndarray): self.values = np.array(self.values)
+        if not isinstance(self.depth_top, np.ndarray): self.depth_top = np.array(self.depth_top)
+        if not isinstance(self.depth_bot, np.ndarray): self.depth_bot = np.array(self.depth_bot)
+        
+        
+        if isinstance(self.values[0], int) or isinstance(self.values[0], float):
+            norm_val = self.values / np.abs(self.values).max()
+            if np.any(norm_val < 0.):
+                norm_val = 0.5 + 0.5*norm_val
+            self.color = {val: matplotlib.cm.get_cmap(self.cmap)(nval)
+                          for val, nval in zip(self.values, norm_val)}
+        if self.x_axis is not None:
+            self.plot=partial(plot2d, self)
+        elif self.name.lower()=='geology' or self.name.lower()=='geo':
+            self.plot=partial(plot_geo, self)
+            if self.color is None:
+                import matplotlib.colors as mcolors
+                self.color = {x: c for x, c in zip(
+                    np.unique(np.array(self.values)), mcolors.TABLEAU_COLORS.keys())}
+            elif isinstance(self.color, str):
+                from matplotlib import colormaps
+                uniq_geo = np.unique(np.array(self.values))
+                colors = colormaps[self.color](
+                    np.linspace(0., 1., len(uniq_geo)))
+                self.color = {x: c for x, c in zip(uniq_geo, colors)}            
+
 
     @property
     def z(self):
@@ -59,7 +129,7 @@ class abcLog(ABC):
 
     def elevation(self, elev):
         if self.elev is not None:
-            raise valuesError("elevation cannot be re-assigned")
+            raise ValueError("elevation cannot be re-assigned")
 
         self.elev = elev
         for mem in vars(self).keys():
@@ -75,36 +145,6 @@ class abcLog(ABC):
                 exec_str = f'self.{mem} += offset'
                 exec(exec_str)
         return self
-
-    @classmethod
-    def load(cls, fname, **kwargs):
-        """load saved log object
-
-        Args:
-            fname (str): path to model file
-
-        Returns:
-            Model object
-
-        """
-        from dill import load
-        a_file = open(fname, "rb")
-        akern = load(a_file)
-        a_file.close()
-        return akern
-
-    def save(self, fname):
-        """ Save model object
-
-        Args:
-            fname (str): path to desired save location
-        Returns:
-            None
-        """
-        from dill import dump
-        outfile = open(fname, 'wb')
-        dump(self, outfile)
-        outfile.close()
 
     def __add__(self, other):
         """Concatenate logs with overlapping intervals averaged."""
@@ -137,19 +177,6 @@ class abcLog(ABC):
             units=self.units
         )
 
-
-class Log(abcLog):
-    def __init__(self, values, depth_top, depth_bot, name, units='', cmap=Blues, **kwargs):
-        super().__init__(values, depth_top, depth_bot, name, units=units, **kwargs)
-
-        if isinstance(self.values[0], int) or isinstance(self.values[0], float):
-            norm_val = self.values / np.abs(self.values).max()
-            if np.any(norm_val < 0.):
-                norm_val = 0.5 + 0.5*norm_val
-            self.color = {val: cmap(nval)
-                          for val, nval in zip(self.values, norm_val)}
-            
-        self.source_method = None
 
     def plot(self, ax=None, x_offset=0., **kwargs):
         if ax is None:
@@ -286,96 +313,16 @@ class Log(abcLog):
         """assumed to start at the surface, and extend to infinity in the bottom layer"""
         depth = np.array(depth)
         depth_top = np.insert(depth, 0, 0)
-        depth_bot = np.append(depth, kwargs.pop('bottom', 1.1*depth.max()))
+        depth_bot = np.append(depth, kwargs.pop('bottom', np.inf))
         self = cls(values, depth_top, depth_bot, name, **kwargs)
         self.source_method = 'standard'
         return self
 
-    @classmethod
-    def geology(cls, geology, depth_top, depth_bottom, name='geology', color_dictionary=None, **kwargs):
-        self = cls(geology, depth_top, depth_bottom, name, **kwargs)
-        self.source_method = 'geology'
 
-        if color_dictionary is None:
-            import matplotlib.colors as mcolors
-            self.color = {x: c for x, c in zip(
-                np.unique(np.array(self.values)), mcolors.TABLEAU_COLORS.keys())}
-        elif isinstance(color_dictionary, str):
-            from matplotlib import colormaps
-            uniq_geo = np.unique(np.array(self.values))
-            colors = colormaps[color_dictionary](
-                np.linspace(0., 1., len(uniq_geo)))
-            self.color = {x: c for x, c in zip(uniq_geo, colors)}
-        else:
-            self.color = color_dictionary
-
-        def plot(ax=None, dx=1., hatch=None, label=True):
-            if ax is None:
-                fig, ax = plt.subplots()
-            if hatch is None:
-                hatch = [None]*len(self.values)
-
-            for i, (dpth_t, dpth_b, geo) in enumerate(zip(self.depth_top, self.depth_bot, self.values)):
-                layer = np.array([[-dx/2, dpth_t],     [dx/2, dpth_t],
-                                  [dx/2, dpth_b],  [-dx/2, dpth_b],
-                                  [-dx/2, dpth_t]])
-                poly = Polygon(
-                    layer, facecolor=self.color[geo], hatch=hatch[i])
-                ax.add_patch(poly)
-            ax.set_xlim([-dx/2, dx/2])
-            ax.set_ylim(max(self.z)+max(self.thickness), 0)
-            ax.set_xticks([])
-
-            if label:
-                ax.yaxis.set_label_position("right")
-                ax.yaxis.tick_right()
-                axgeo = ax.secondary_yaxis('left')
-                axgeo.set_yticks(self.z)
-                labels = [x.replace(' ', '\n') for x in self.values]
-                
-                # axgeo.set_yticklabels(labels)
-                axgeo.set_yticklabels(labels, rotation=45); axgeo.tick_params(axis='y', pad=-2)
-
-            ax.set_ylabel('depth [m]')
-            return ax
-        self.plot = plot
-        return self
-
-    @classmethod
-    def two_dim(cls, values, depth_top, depth_bot, name, x_axis, **kwargs):
-        class Log2D(cls):
-            def __init__(self, values, depth_top, depth_bot, name, **kwargs):
-                assert len(values.shape) == 2, "data is not 2d, try using plain Log class"
-                super().__init__(values, depth_top, depth_bot, name, **kwargs)
-                self.x_axis = kwargs.get('x_axis', x_axis)
-
-            def plot(self, ax=None, **kwargs):
-                cbar = kwargs.pop('cbar', False)
-                if ax is None:
-                    fig, ax = plt.subplots()
-                else:
-                    fig = ax.figure
-                pcm=ax.pcolor(self.x_axis, self.z, self.values, **kwargs)
-                
-                if cbar: res = (ax,pcm)
-                else: res = ax
-                return res
-        kwargs.setdefault('x_axis', x_axis)
-        return Log2D(values, depth_top, depth_bot, name, **kwargs)
-
-
+@nosj
 class Borehole: 
-    def __init__(self, logs, elevation=0., name='', x=None, y=None):
-        self.name = name
-        self.logs = logs
-        self.elev = elevation
-
-        if x is not None:
-            for lg in self.logs:
-                lg.x = x
-        if y is not None:
-            for lg in self.logs:
-                lg.y = y
+    logs  : List[Log]
+    elev  : float = 0.
 
     def elev2depth(self, elev):
         return self.elev-elev
@@ -410,7 +357,7 @@ class Borehole:
 
     def __getitem__(self, logname):
         i = self.names.index(logname)
-        tmp_log = self.logs[i]#.copy()
+        tmp_log = self.logs[i]
         return tmp_log
 
     def plot(self, axs=None):
@@ -431,40 +378,6 @@ class Borehole:
             if isinstance(log, Log) and log.source_method == 'geology':
                 axs[i].set_aspect(0.25)
         return axs
-
-    def copy(self):
-        from copy import deepcopy
-        return deepcopy(self)
-
-    @classmethod
-    def load(cls, fname, **kwargs):
-        """load saved borehole object
-
-        Args:
-            fname (str): path to model file
-
-        Returns:
-            Borehole object
-
-        """
-        from dill import load
-        a_file = open(fname, "rb")
-        akern = load(a_file)
-        a_file.close()
-        return akern
-
-    def save(self, fname):
-        """ Save model object
-
-        Args:
-            fname (str): path to desired save location
-        Returns:
-            None
-        """
-        from dill import dump
-        outfile = open(fname, 'wb')
-        dump(self, outfile)
-        outfile.close()
     
     def __add__(self, other):
         """Concatenate boreholes with overlapping intervals averaged."""
@@ -475,9 +388,10 @@ class Borehole:
             combined_log = log1 + log2
             combined_logs.append(combined_log)
 
-        return self.__class__(combined_logs, elevation=self.elev, name=self.name, x=self.x, y=self.y)
+        res = self.__class__(combined_logs, elev=self.elev)
+        return res
 
-
+@nosj
 class Dart(Borehole):
 
     @classmethod
@@ -496,12 +410,12 @@ class Dart(Borehole):
         SE_decay = np.genfromtxt(export_folder+'_SE_decay.txt')
         SE_time  = np.genfromtxt(export_folder+'_SE_decay_time.txt')
         # bit of a hack
-        logs.append(Log.two_dim(SE_decay[:,:-1], logs[-1].depth_top, logs[-1].depth_bot, 'SE decay', SE_time*1000))
+        logs.append(Log(SE_decay[:,:-1], logs[-1].depth_top, logs[-1].depth_bot, 'SE decay', x_axis=SE_time*1000))
 
         T2_dist = np.genfromtxt(export_folder+'_T2_dist.txt')*100
         T2_dist_bins = 10**np.genfromtxt(export_folder+'_T2_bins_log10s.txt')
         # bit of a hack
-        logs.append(Log.two_dim(T2_dist[:,1:], logs[-1].depth_top, logs[-1].depth_bot, 'T2 dist', T2_dist_bins))
+        logs.append(Log(T2_dist[:,1:], logs[-1].depth_top, logs[-1].depth_bot, 'T2 dist', x_axis=T2_dist_bins))
 
         self = cls(logs, **kwargs)
 
@@ -535,20 +449,20 @@ class Dart(Borehole):
         else:
             fig = ax.figure
         base = np.zeros_like(self['freef'].values)
-        ax.plot(self['totalf'].values,
+        ax.plot(self['totalf'].values*100,
                 self['totalf'].z,  'k-', label='total',)
         ax.fill_betweenx(
-            self['totalf'].z, base, self['freef'].values, label='free', facecolor='b')
-        base += self['freef'].values
+            self['totalf'].z, base, self['freef'].values*100, label='free', facecolor='b')
+        base += self['freef'].values*100
         ax.fill_betweenx(self['totalf'].z, base, base +
-                            self['capf'].values, label='cap.', facecolor='cyan')
-        base += self['capf'].values
+                            self['capf'].values*100, label='cap.', facecolor='cyan')
+        base += self['capf'].values*100
         ax.fill_betweenx(self['totalf'].z, base, base +
-                            self['clayf'].values, label='clay', facecolor='bisque')
+                            self['clayf'].values*100, label='clay', facecolor='bisque')
         if legend:
             ax.legend(fontsize='small')
-        ax.set_xlim(0, 1.)
-        ax.set_xlabel('Water Content [ratio]')
+        ax.set_xlim(0, 100.)
+        ax.set_xlabel('Water Content [%]')
         ax.set_ylabel('Depth [m]')
         return ax
 
@@ -616,10 +530,10 @@ class Dart(Borehole):
         axs[n_extra+4].yaxis.set_label_text('depth [m]')
         axs[n_extra+4].set_axisbelow(True)
         axs[n_extra+4].grid(True)
+        axs[n_extra+4].set_ylim(self['totalf'].depth_bot.max(), self['totalf'].depth_top.min())
         return axs
 
     def t2_trim(self, T2_min):
-        # new_bh = self.copy()
         tmp = self['T2 dist'].copy()
         five_ms = tmp.x_axis >= T2_min
         lg1 = Log.two_dim(

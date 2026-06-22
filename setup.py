@@ -31,7 +31,7 @@ setup(
     author_email='mpg@geo.au.dk',
     packages=find_packages('src'),
     package_dir={'':'src'},
-    install_requires=['numpy', 'matplotlib', 'dill'],
+    install_requires=['numpy', 'matplotlib', 'nosj'],
     version=__version__,
     license='MIT',
     description='plot logs',
