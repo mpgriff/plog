@@ -1,3 +1,6 @@
+__version__ = "0.0.3"
+__all__ = ['plog']
+
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -82,7 +85,7 @@ class Log:
             norm_val = self.values / np.abs(self.values).max()
             if np.any(norm_val < 0.):
                 norm_val = 0.5 + 0.5*norm_val
-            self.color = {val: matplotlib.cm.get_cmap(self.cmap)(nval)
+            self.color = {val: matplotlib.pyplot.get_cmap(self.cmap)(nval)
                           for val, nval in zip(self.values, norm_val)}
         if self.x_axis is not None:
             self.plot=partial(plot2d, self)
@@ -187,7 +190,8 @@ class Log:
             cmap = kwargs.pop('cmap')
             dx = kwargs.pop('dx', 1.)
             border = kwargs.pop('border', '')
-            zset = np.unique(np.concatenate((self.depth_top, self.depth_bot)))
+            zset = np.nan_to_num(np.unique(np.concatenate((self.depth_top, self.depth_bot))))
+            zset[zset==np.inf] = zset[zset!=np.inf].max()*1.1
             if self.elev is not None:
                 zset = zset[::-1]
 
@@ -215,6 +219,8 @@ class Log:
                 'vmax', self.values.max())
             # this gives the plot a step-wise form, where the layer boundaries are correct.
             tmpz = np.vstack((self.depth_top, self.depth_bot)).T.flatten()
+            tmpz[tmpz==np.inf] = tmpz[tmpz!=np.inf].max()*1.1
+
             tmpx = np.vstack((self.values, self.values)).T.flatten()
             # kwargs.setdefault('label', self.name)
             ax.plot(tmpx+x_offset, tmpz,  **kwargs)
@@ -225,6 +231,7 @@ class Log:
             ax.set_xlabel(self.name)
 
         if self.elev is None:
+            print(tmpz)
             ax.set_ylim(tmpz.max(), tmpz.min())
 
         if cbar:
@@ -318,6 +325,13 @@ class Log:
         self.source_method = 'standard'
         return self
 
+    @classmethod
+    def geology(cls, values, depth_top, depth_bot, **kwargs):
+        name = kwargs.pop('name', None)
+        log = cls(values, depth_top, depth_bot, 'geology', **kwargs)
+        if name is not None:
+            log.name = name
+        return log
 
 @nosj
 class Borehole: 
@@ -375,8 +389,8 @@ class Borehole:
             if self.elev != 0:
                 ax2 = axs[i].secondary_yaxis(
                     'right', functions=(self.elev2depth, self.depth2elev))
-            if isinstance(log, Log) and log.source_method == 'geology':
-                axs[i].set_aspect(0.25)
+            # if isinstance(log, Log) and log.name == 'geology':
+            #     axs[i].set_aspect(0.25)
         return axs
     
     def __add__(self, other):

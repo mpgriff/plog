@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plog"
+description = "JSON encoding/decoding for Numpy arrays and scalars"
+authors = [{ name = "mpgriff", email = "mpg@geo.au.dk" }]
+maintainers = [{ name = "mpgriff", email = "mpg@geo.au.dk" }]
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+dependencies = ["matplotlib", "numpy", "nosj"]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/mpgriff/plog"
+Repository = "https://github.com/mpgriff/plog.git"
+Issues = "https://github.com/mpgriff/plog/issues"
+
+[tool.setuptools]
+py-modules = ["plog"]
+
+[tool.setuptools.dynamic]
+version = { attr = "plog.__version__" }
+description = { file = "README.md" }

@@ -168,3 +168,4 @@ scripts/plog_opener.cmd
 *.swp
 *.md~
 .gitignore~
+uv.lock

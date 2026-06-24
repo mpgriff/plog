@@ -21,7 +21,7 @@ python
 from plog import Dart
 import matplotlib.pyplot as plt
 
-bh = Dart('./Results/TSB1_23-Nov-2024/TSB1_23-Nov-2024')
+bh = Dart.from_folder('./Results/TSB1_23-Nov-2024/')
 bh.plot()
 plt.savefig('./Plots/TSB1p1Y.png',dpi=300)
 plt.show()
